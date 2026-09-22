@@ -1,12 +1,58 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, memo } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import Peer, { DataConnection, MediaConnection } from 'peerjs';
+import { io, Socket } from 'socket.io-client';
 import {
   Mic, MicOff, Camera, CameraOff, MonitorUp, MonitorOff,
   MessageSquare, Users, PhoneOff, Circle, Copy, Check,
-  Send, X, Shield, Clock, Wifi, WifiOff
+  Send, X, Shield, Clock, Wifi, WifiOff, AlertCircle, CheckCircle, XCircle
 } from 'lucide-react';
 import { useMeetingStore } from '../store/meetingStore';
+import { getSocketUrl } from '../utils/serverConfig';
+import { generateUUID } from '../utils/uuid';
+import { useMediaTest } from '../hooks/useMediaTest';
+import { AudioProcessor } from '../utils/audioProcessor';
+
+// Оптимизированный компонент для удаленного видео
+const RemoteVideoTile = memo(({ stream, name, peerId, onClick }: { 
+  stream: MediaStream; 
+  name: string; 
+  peerId: string;
+  onClick: () => void;
+}) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  return (
+    <div 
+      className="relative bg-slate-800 rounded-2xl overflow-hidden border border-white/10 min-h-[200px] cursor-pointer hover:border-purple-500/50 transition-all group"
+      onClick={onClick}
+    >
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        className="w-full h-full object-cover"
+      />
+      <div className="absolute bottom-3 left-3">
+        <span className="px-2.5 py-1 bg-black/60 backdrop-blur rounded-lg text-white text-xs font-medium">
+          {name}
+        </span>
+      </div>
+      <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="px-2 py-1 bg-black/60 backdrop-blur rounded-lg text-white text-xs">
+          Нажмите для увеличения
+        </div>
+      </div>
+    </div>
+  );
+});
+
+RemoteVideoTile.displayName = 'RemoteVideoTile';
 
 interface ParticipantInfo {
   peerId: string;
@@ -14,7 +60,6 @@ interface ParticipantInfo {
   isMuted: boolean;
   isVideoOn: boolean;
   isScreenSharing: boolean;
-  joinedAt: string;
 }
 
 interface ChatMsg {
@@ -35,6 +80,7 @@ export default function VideoRoom() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { startMeeting, endMeeting, getMeeting } = useMeetingStore();
+  const { result: mediaTest, testing: mediaTesting } = useMediaTest();
 
   const myName = searchParams.get('name') || 'Гость';
   const startMuted = searchParams.get('muted') === 'true';
@@ -46,6 +92,7 @@ export default function VideoRoom() {
   const [isRecording, setIsRecording] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showParticipants, setShowParticipants] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [chatMessage, setChatMessage] = useState('');
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [participants, setParticipants] = useState<ParticipantInfo[]>([]);
@@ -53,78 +100,117 @@ export default function VideoRoom() {
   const [copied, setCopied] = useState(false);
   const [elapsedTime, setElapsedTime] = useState('00:00');
   const [isConnected, setIsConnected] = useState(false);
-  const [role, setRole] = useState<'host' | 'guest' | 'connecting'>('connecting');
+  const [mediaError, setMediaError] = useState<string>('');
+  const [localStreamReady, setLocalStreamReady] = useState(false);
+  const [expandedVideo, setExpandedVideo] = useState<string | null>(null);
 
-  const peerRef = useRef<Peer | null>(null);
+  const socketRef = useRef<Socket | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const processedStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval>>();
-  const connectionsRef = useRef<Map<string, DataConnection>>(new Map());
-  const mediaConnectionsRef = useRef<Map<string, MediaConnection>>(new Map());
+  const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const pendingCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const myPeerIdRef = useRef('');
-  const isHostRef = useRef(false);
   const participantsRef = useRef<ParticipantInfo[]>([]);
-  const localStreamReadyRef = useRef(false);
+  const audioProcessorRef = useRef<AudioProcessor | null>(null);
 
-  const hostPeerId = `meetflow-${roomId}`;
+  const ICE_SERVERS = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+      {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+    ]
+  };
 
-  // Keep ref in sync
   useEffect(() => {
     participantsRef.current = participants;
   }, [participants]);
 
-  const broadcastToAll = useCallback((data: any, excludePeerId?: string) => {
-    connectionsRef.current.forEach((conn, peerId) => {
-      if (peerId !== excludePeerId) {
-        try {
-          conn.send(data);
-        } catch (e) {
-          console.error('Failed to send to:', peerId, e);
+  const createPeerConnection = useCallback((targetPeerId: string) => {
+    const pc = new RTCPeerConnection({
+      ...ICE_SERVERS,
+      iceTransportPolicy: 'all',
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require'
+    });
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        console.log('🧊 ICE candidate for:', targetPeerId);
+        if (socketRef.current) {
+          socketRef.current.emit('signal-ice-candidate', {
+            roomId,
+            targetPeerId,
+            candidate: event.candidate
+          });
         }
       }
-    });
-  }, []);
+    };
 
-  const callPeer = useCallback((targetPeerId: string, stream: MediaStream) => {
-    if (!peerRef.current || peerRef.current.destroyed) return;
-    
-    const existingCall = mediaConnectionsRef.current.get(targetPeerId);
-    if (existingCall) return;
-
-    try {
-      const call = peerRef.current.call(targetPeerId, stream);
-      if (call) {
-        call.on('stream', (remoteStream) => {
-          const participantName = participantsRef.current.find(p => p.peerId === targetPeerId)?.name || 'Участник';
-          setRemoteStreams((prev) => {
-            const filtered = prev.filter((s) => s.peerId !== targetPeerId);
-            return [...filtered, { peerId: targetPeerId, stream: remoteStream, name: participantName }];
-          });
-        });
-        call.on('close', () => {
-          setRemoteStreams((prev) => prev.filter((s) => s.peerId !== targetPeerId));
-        });
-        call.on('error', (err) => {
-          console.error('Call error with', targetPeerId, err);
-        });
-        mediaConnectionsRef.current.set(targetPeerId, call);
-      }
-    } catch (err) {
-      console.error('Failed to call:', targetPeerId, err);
+    // Добавляем треки из обработанного потока (с шумоподавлением)
+    const streamToSend = processedStreamRef.current || localStreamRef.current;
+    if (streamToSend) {
+      streamToSend.getTracks().forEach((track) => {
+        pc.addTrack(track, streamToSend);
+      });
     }
-  }, []);
 
-  const callAllParticipants = useCallback((stream: MediaStream) => {
-    participantsRef.current.forEach((p) => {
-      if (p.peerId !== myPeerIdRef.current) {
-        callPeer(p.peerId, stream);
+    pc.ontrack = (event) => {
+      console.log('🎬 Received track from:', targetPeerId, 'kind:', event.track.kind);
+      
+      if (event.streams && event.streams[0]) {
+        const stream = event.streams[0];
+        const participantName = participantsRef.current.find(p => p.peerId === targetPeerId)?.name || 'Участник';
+        
+        setRemoteStreams((prev) => {
+          const existing = prev.find(s => s.peerId === targetPeerId);
+          
+          // Проверяем, действительно ли нужно обновлять
+          if (existing && existing.stream === stream) {
+            return prev; // Нет изменений
+          }
+          
+          if (existing) {
+            return prev.map(s => s.peerId === targetPeerId ? { ...s, stream } : s);
+          } else {
+            return [...prev, { peerId: targetPeerId, stream, name: participantName }];
+          }
+        });
       }
-    });
-  }, [callPeer]);
+    };
 
-  // Initialize
+    pc.oniceconnectionstatechange = () => {
+      console.log('🔌 ICE state:', pc.iceConnectionState, 'for:', targetPeerId);
+      if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
+        setRemoteStreams((prev) => prev.filter((s) => s.peerId !== targetPeerId));
+        setParticipants((prev) => prev.filter((p) => p.peerId !== targetPeerId));
+      }
+    };
+
+    peerConnectionsRef.current.set(targetPeerId, pc);
+    return pc;
+  }, [roomId]);
+
   useEffect(() => {
     if (!roomId) return;
 
@@ -133,72 +219,231 @@ export default function VideoRoom() {
       startMeeting(roomId);
     }
 
-    // Step 1: Try to become host by registering with the room ID
-    const hostPeer = new Peer(hostPeerId, {
-      host: '0.peerjs.com',
-      port: 443,
-      secure: true,
-      debug: 1,
+    myPeerIdRef.current = `peer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+    const socket = io(getSocketUrl(), {
+      transports: ['websocket', 'polling']
+    });
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      console.log('✅ Connected to signaling server');
+      setIsConnected(true);
+
+      const savedMessages = JSON.parse(localStorage.getItem(`chat-${roomId}`) || '[]');
+      if (savedMessages.length > 0) {
+        setMessages(savedMessages);
+      }
+
+      socket.emit('join-room', {
+        roomId,
+        peerId: myPeerIdRef.current,
+        userName: myName
+      });
     });
 
-    peerRef.current = hostPeer;
+    socket.on('connect_error', (error) => {
+      console.error('❌ Connection error:', error);
+      setIsConnected(false);
+    });
 
-    hostPeer.on('open', (id) => {
-      myPeerIdRef.current = id;
-      isHostRef.current = true;
-      setRole('host');
-      setIsConnected(true);
-      console.log('I am the HOST. Peer ID:', id);
-
-      // Add self
+    socket.on('room-users', (existingUsers: any[]) => {
+      console.log('👥 Existing users:', existingUsers.length);
+      
       const me: ParticipantInfo = {
-        peerId: id,
+        peerId: myPeerIdRef.current,
         name: myName,
         isMuted: startMuted,
         isVideoOn: startVideo,
         isScreenSharing: false,
-        joinedAt: new Date().toISOString(),
       };
-      setParticipants([me]);
-    });
-
-    hostPeer.on('error', (err) => {
-      console.error('Peer error:', err);
       
-      if (err.type === 'unavailable-id') {
-        // Host already exists, connect as guest
-        console.log('Room already has a host, joining as guest');
-        hostPeer.destroy();
-        joinAsGuest();
-      } else if (err.type === 'network' || err.type === 'server-error') {
-        console.error('Network/server error:', err);
-      } else if (err.type === 'peer-unavailable') {
-        // Host left, try to become new host
-        console.log('Host unavailable, trying to become host');
-        hostPeer.destroy();
-        tryBecomeHost();
+      const others = existingUsers.map((u: any) => ({
+        peerId: u.peerId,
+        name: u.userName,
+        isMuted: false,
+        isVideoOn: true,
+        isScreenSharing: false,
+      }));
+      
+      setParticipants([me, ...others]);
+
+      const waitForStreamAndConnect = () => {
+        if (localStreamRef.current) {
+          others.forEach((user: any, index: number) => {
+            setTimeout(() => {
+              const pc = createPeerConnection(user.peerId);
+              
+              localStreamRef.current!.getTracks().forEach((track) => {
+                pc.addTrack(track, localStreamRef.current!);
+              });
+              
+              pc.createOffer().then((offer) => {
+                pc.setLocalDescription(offer);
+                socket.emit('signal-offer', {
+                  roomId,
+                  targetPeerId: user.peerId,
+                  offer
+                });
+              }).catch(err => {
+                console.error('❌ Error creating offer:', err);
+              });
+            }, index * 200);
+          });
+        } else {
+          setTimeout(waitForStreamAndConnect, 100);
+        }
+      };
+      waitForStreamAndConnect();
+    });
+
+    socket.on('user-joined', ({ peerId, userName }: { peerId: string; userName: string }) => {
+      console.log('👋 User joined:', userName);
+      
+      setParticipants((prev) => {
+        if (prev.find((p) => p.peerId === peerId)) return prev;
+        return [...prev, {
+          peerId,
+          name: userName,
+          isMuted: false,
+          isVideoOn: true,
+          isScreenSharing: false,
+        }];
+      });
+      
+      const waitForStreamAndConnect = () => {
+        if (localStreamRef.current) {
+          const pc = createPeerConnection(peerId);
+          
+          localStreamRef.current!.getTracks().forEach((track) => {
+            pc.addTrack(track, localStreamRef.current!);
+          });
+          
+          pc.createOffer().then((offer) => {
+            pc.setLocalDescription(offer);
+            socket.emit('signal-offer', {
+              roomId,
+              targetPeerId: peerId,
+              offer
+            });
+          }).catch(err => {
+            console.error('❌ Error creating offer:', err);
+          });
+        } else {
+          setTimeout(waitForStreamAndConnect, 100);
+        }
+      };
+      waitForStreamAndConnect();
+    });
+
+    socket.on('signal-offer', async ({ fromPeerId, offer }: { fromPeerId: string; offer: RTCSessionDescriptionInit }) => {
+      console.log('📨 Received offer from:', fromPeerId);
+      
+      let pc = peerConnectionsRef.current.get(fromPeerId);
+      if (!pc) {
+        pc = createPeerConnection(fromPeerId);
+        
+        if (localStreamRef.current) {
+          localStreamRef.current.getTracks().forEach((track) => {
+            pc!.addTrack(track, localStreamRef.current!);
+          });
+        }
+      }
+
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      
+      const pendingCandidates = pendingCandidatesRef.current.get(fromPeerId);
+      if (pendingCandidates && pendingCandidates.length > 0) {
+        for (const candidate of pendingCandidates) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          } catch (e) {
+            console.error('❌ Error applying buffered candidate:', e);
+          }
+        }
+        pendingCandidatesRef.current.delete(fromPeerId);
+      }
+      
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      
+      socket.emit('signal-answer', {
+        roomId,
+        targetPeerId: fromPeerId,
+        answer
+      });
+    });
+
+    socket.on('signal-answer', async ({ fromPeerId, answer }: { fromPeerId: string; answer: RTCSessionDescriptionInit }) => {
+      console.log('📨 Received answer from:', fromPeerId);
+      
+      const pc = peerConnectionsRef.current.get(fromPeerId);
+      if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        
+        const pendingCandidates = pendingCandidatesRef.current.get(fromPeerId);
+        if (pendingCandidates && pendingCandidates.length > 0) {
+          for (const candidate of pendingCandidates) {
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(candidate));
+            } catch (e) {
+              console.error('❌ Error applying buffered candidate:', e);
+            }
+          }
+          pendingCandidatesRef.current.delete(fromPeerId);
+        }
       }
     });
 
-    hostPeer.on('disconnected', () => {
-      console.log('Disconnected, reconnecting...');
-      if (!hostPeer.destroyed) {
-        hostPeer.reconnect();
+    socket.on('signal-ice-candidate', async ({ fromPeerId, candidate }: { fromPeerId: string; candidate: RTCIceCandidateInit }) => {
+      const pc = peerConnectionsRef.current.get(fromPeerId);
+      if (pc) {
+        if (pc.remoteDescription) {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } else {
+          if (!pendingCandidatesRef.current.has(fromPeerId)) {
+            pendingCandidatesRef.current.set(fromPeerId, []);
+          }
+          pendingCandidatesRef.current.get(fromPeerId)!.push(candidate);
+        }
       }
     });
 
-    // Handle incoming connections (as host)
-    hostPeer.on('connection', (conn) => {
-      console.log('Guest connected:', conn.peer);
-      handleNewConnection(conn, hostPeer);
+    socket.on('chat-message', (message: ChatMsg) => {
+      setMessages((prev) => {
+        // Проверяем, есть ли уже такое сообщение (защита от дублирования)
+        if (prev.find(m => m.id === message.id)) {
+          return prev;
+        }
+        
+        // Сохраняем в localStorage
+        const savedMessages = JSON.parse(localStorage.getItem(`chat-${roomId}`) || '[]');
+        if (!savedMessages.find((m: ChatMsg) => m.id === message.id)) {
+          savedMessages.push(message);
+          localStorage.setItem(`chat-${roomId}`, JSON.stringify(savedMessages));
+        }
+        
+        return [...prev, message];
+      });
     });
 
-    // Handle incoming calls (as host)
-    hostPeer.on('call', (call) => {
-      handleIncomingCall(call);
+    socket.on('chat-history', (history: ChatMsg[]) => {
+      setMessages(history);
     });
 
-    // Timer
+    socket.on('user-left', ({ peerId }: { peerId: string }) => {
+      console.log('👋 User left:', peerId);
+      
+      setParticipants((prev) => prev.filter((p) => p.peerId !== peerId));
+      setRemoteStreams((prev) => prev.filter((s) => s.peerId !== peerId));
+      
+      const pc = peerConnectionsRef.current.get(peerId);
+      if (pc) {
+        pc.close();
+        peerConnectionsRef.current.delete(peerId);
+      }
+    });
+
     const startTime = Date.now();
     timerRef.current = setInterval(() => {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -210,12 +455,7 @@ export default function VideoRoom() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       
-      // Notify and cleanup
-      connectionsRef.current.forEach((conn) => {
-        try { conn.send({ type: 'leave', peerId: myPeerIdRef.current }); } catch {}
-        conn.close();
-      });
-      mediaConnectionsRef.current.forEach((call) => call.close());
+      peerConnectionsRef.current.forEach((pc) => pc.close());
       
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((t) => t.stop());
@@ -223,289 +463,15 @@ export default function VideoRoom() {
       if (screenStreamRef.current) {
         screenStreamRef.current.getTracks().forEach((t) => t.stop());
       }
-      
-      if (peerRef.current && !peerRef.current.destroyed) {
-        peerRef.current.destroy();
+      if (audioProcessorRef.current) {
+        audioProcessorRef.current.stop();
       }
+      
+      socket.disconnect();
       if (roomId) endMeeting(roomId);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
-  const tryBecomeHost = () => {
-    const peer = new Peer(hostPeerId, {
-      host: '0.peerjs.com',
-      port: 443,
-      secure: true,
-      debug: 1,
-    });
-    peerRef.current = peer;
-
-    peer.on('open', (id) => {
-      myPeerIdRef.current = id;
-      isHostRef.current = true;
-      setRole('host');
-      setIsConnected(true);
-      console.log('Became new HOST:', id);
-
-      const me: ParticipantInfo = {
-        peerId: id,
-        name: myName,
-        isMuted: startMuted,
-        isVideoOn: startVideo,
-        isScreenSharing: false,
-        joinedAt: new Date().toISOString(),
-      };
-      setParticipants([me]);
-
-      if (localStreamReadyRef.current && localStreamRef.current) {
-        setTimeout(() => callAllParticipants(localStreamRef.current!), 500);
-      }
-    });
-
-    peer.on('error', (err) => {
-      console.error('Error becoming host:', err);
-      if (err.type === 'unavailable-id') {
-        peer.destroy();
-        joinAsGuest();
-      }
-    });
-
-    peer.on('connection', (conn) => handleNewConnection(conn, peer));
-    peer.on('call', (call) => handleIncomingCall(call));
-  };
-
-  const joinAsGuest = () => {
-    const guestId = `meetflow-guest-${roomId}-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-    const guestPeer = new Peer(guestId, {
-      host: '0.peerjs.com',
-      port: 443,
-      secure: true,
-      debug: 1,
-    });
-    peerRef.current = guestPeer;
-
-    guestPeer.on('open', (id) => {
-      myPeerIdRef.current = id;
-      isHostRef.current = false;
-      setRole('guest');
-      console.log('Guest peer opened:', id);
-
-      // Connect to host
-      const hostConn = guestPeer.connect(hostPeerId, { reliable: true, serialization: 'json' });
-      
-      hostConn.on('open', () => {
-        console.log('Connected to host!');
-        setIsConnected(true);
-        connectionsRef.current.set(hostPeerId, hostConn);
-
-        const me: ParticipantInfo = {
-          peerId: id,
-          name: myName,
-          isMuted: startMuted,
-          isVideoOn: startVideo,
-          isScreenSharing: false,
-          joinedAt: new Date().toISOString(),
-        };
-        setParticipants([me]);
-
-        // Send join message to host
-        hostConn.send({ type: 'join', participant: me });
-
-        // Call host with our stream
-        if (localStreamReadyRef.current && localStreamRef.current) {
-          setTimeout(() => callPeer(hostPeerId, localStreamRef.current!), 500);
-        }
-      });
-
-      hostConn.on('data', (data: any) => {
-        handleHostMessage(data, guestPeer);
-      });
-
-      hostConn.on('close', () => {
-        console.log('Host disconnected');
-        setIsConnected(false);
-        connectionsRef.current.delete(hostPeerId);
-      });
-
-      hostConn.on('error', (err) => {
-        console.error('Host connection error:', err);
-      });
-    });
-
-    guestPeer.on('error', (err) => {
-      console.error('Guest peer error:', err);
-      if (err.type === 'peer-unavailable') {
-        // Host left, try to become host
-        console.log('Host not found, trying to become host');
-        guestPeer.destroy();
-        tryBecomeHost();
-      }
-    });
-
-    guestPeer.on('connection', (conn) => {
-      // Other guests might connect directly in mesh
-      handleNewConnection(conn, guestPeer);
-    });
-
-    guestPeer.on('call', (call) => {
-      handleIncomingCall(call);
-    });
-
-    guestPeer.on('disconnected', () => {
-      if (!guestPeer.destroyed) guestPeer.reconnect();
-    });
-  };
-
-  const handleNewConnection = (conn: DataConnection, peer: Peer) => {
-    connectionsRef.current.set(conn.peer, conn);
-
-    conn.on('open', () => {
-      console.log('Data connection opened with:', conn.peer);
-    });
-
-    conn.on('data', (data: any) => {
-      handleDataMessage(data, conn, peer);
-    });
-
-    conn.on('close', () => {
-      console.log('Connection closed:', conn.peer);
-      connectionsRef.current.delete(conn.peer);
-      mediaConnectionsRef.current.delete(conn.peer);
-      setRemoteStreams((prev) => prev.filter((s) => s.peerId !== conn.peer));
-      setParticipants((prev) => prev.filter((p) => p.peerId !== conn.peer));
-
-      if (isHostRef.current) {
-        broadcastToAll({ type: 'participant-left', peerId: conn.peer });
-      }
-    });
-
-    conn.on('error', (err) => {
-      console.error('Connection error:', conn.peer, err);
-    });
-  };
-
-  const handleIncomingCall = (call: MediaConnection) => {
-    console.log('Incoming call from:', call.peer);
-
-    if (localStreamRef.current) {
-      call.answer(localStreamRef.current);
-    } else {
-      call.answer(new MediaStream());
-    }
-
-    call.on('stream', (remoteStream) => {
-      console.log('Received stream from:', call.peer);
-      const participantName = participantsRef.current.find(p => p.peerId === call.peer)?.name || 'Участник';
-      setRemoteStreams((prev) => {
-        const filtered = prev.filter((s) => s.peerId !== call.peer);
-        return [...filtered, { peerId: call.peer, stream: remoteStream, name: participantName }];
-      });
-    });
-
-    call.on('close', () => {
-      setRemoteStreams((prev) => prev.filter((s) => s.peerId !== call.peer));
-    });
-
-    call.on('error', (err) => {
-      console.error('Call error:', call.peer, err);
-    });
-
-    mediaConnectionsRef.current.set(call.peer, call);
-  };
-
-  const handleHostMessage = (data: any, peer: Peer) => {
-    if (data.type === 'participants-list') {
-      const others = data.participants.filter((p: ParticipantInfo) => p.peerId !== myPeerIdRef.current);
-      setParticipants((prev) => {
-        const me = prev.find((p) => p.peerId === myPeerIdRef.current);
-        return me ? [me, ...others] : others;
-      });
-
-      // Call all participants
-      if (localStreamReadyRef.current && localStreamRef.current) {
-        setTimeout(() => {
-          data.participants.forEach((p: ParticipantInfo) => {
-            if (p.peerId !== myPeerIdRef.current && p.peerId !== hostPeerId) {
-              callPeer(p.peerId, localStreamRef.current!);
-            }
-          });
-        }, 500);
-      }
-    } else if (data.type === 'new-participant') {
-      setParticipants((prev) => {
-        if (prev.find((p) => p.peerId === data.participant.peerId)) return prev;
-        return [...prev, data.participant];
-      });
-
-      // Call new participant
-      if (localStreamReadyRef.current && localStreamRef.current) {
-        setTimeout(() => callPeer(data.participant.peerId, localStreamRef.current!), 300);
-      }
-    } else if (data.type === 'chat-message') {
-      setMessages((prev) => [...prev, data.message]);
-    } else if (data.type === 'participant-update') {
-      setParticipants((prev) =>
-        prev.map((p) =>
-          p.peerId === data.participant.peerId ? { ...p, ...data.participant } : p
-        )
-      );
-    } else if (data.type === 'participant-left') {
-      setParticipants((prev) => prev.filter((p) => p.peerId !== data.peerId));
-      setRemoteStreams((prev) => prev.filter((s) => s.peerId !== data.peerId));
-      connectionsRef.current.delete(data.peerId);
-      mediaConnectionsRef.current.delete(data.peerId);
-    }
-  };
-
-  const handleDataMessage = (data: any, conn: DataConnection, peer: Peer) => {
-    if (data.type === 'join') {
-      setParticipants((prev) => {
-        if (prev.find((p) => p.peerId === data.participant.peerId)) return prev;
-        return [...prev, data.participant];
-      });
-
-      if (isHostRef.current) {
-        // Broadcast new participant to all
-        broadcastToAll({ type: 'new-participant', participant: data.participant }, conn.peer);
-
-        // Send full list to newcomer
-        conn.send({
-          type: 'participants-list',
-          participants: [...participantsRef.current, data.participant],
-        });
-      }
-
-      // Call new participant
-      if (localStreamReadyRef.current && localStreamRef.current) {
-        setTimeout(() => callPeer(data.participant.peerId, localStreamRef.current!), 300);
-      }
-    } else if (data.type === 'chat-message') {
-      setMessages((prev) => [...prev, data.message]);
-      if (isHostRef.current) {
-        broadcastToAll(data, conn.peer);
-      }
-    } else if (data.type === 'participant-update') {
-      setParticipants((prev) =>
-        prev.map((p) =>
-          p.peerId === data.participant.peerId ? { ...p, ...data.participant } : p
-        )
-      );
-      if (isHostRef.current) {
-        broadcastToAll(data, conn.peer);
-      }
-    } else if (data.type === 'leave') {
-      setParticipants((prev) => prev.filter((p) => p.peerId !== data.peerId));
-      setRemoteStreams((prev) => prev.filter((s) => s.peerId !== data.peerId));
-      connectionsRef.current.delete(data.peerId);
-      mediaConnectionsRef.current.delete(data.peerId);
-      if (isHostRef.current) {
-        broadcastToAll({ type: 'participant-left', peerId: data.peerId });
-      }
-    }
-  };
-
-  // Setup local media
   useEffect(() => {
     const setupMedia = async () => {
       try {
@@ -515,30 +481,34 @@ export default function VideoRoom() {
         };
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         localStreamRef.current = stream;
-        localStreamReadyRef.current = true;
+        
+        // Применяем шумоподавление к аудио
+        if (!startMuted && stream.getAudioTracks().length > 0) {
+          try {
+            audioProcessorRef.current = new AudioProcessor();
+            const processedStream = await audioProcessorRef.current.processStream(stream);
+            processedStreamRef.current = processedStream;
+            console.log('✅ Noise suppression enabled');
+          } catch (err) {
+            console.warn('⚠️ Could not enable noise suppression, using original stream:', err);
+            processedStreamRef.current = stream;
+          }
+        } else {
+          processedStreamRef.current = stream;
+        }
+        
+        setLocalStreamReady(true);
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
-
-        // Call all existing participants once stream is ready
-        setTimeout(() => {
-          if (participantsRef.current.length > 1) {
-            callAllParticipants(stream);
-          }
-        }, 1500);
-      } catch (err) {
-        console.log('Media not available:', err);
-        // Create empty stream
-        const emptyStream = new MediaStream();
-        localStreamRef.current = emptyStream;
-        localStreamReadyRef.current = true;
+      } catch (err: any) {
+        console.error('❌ Media error:', err);
+        setMediaError(err.message || 'Не удалось получить доступ к камере/микрофону');
       }
     };
     setupMedia();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-scroll chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -549,11 +519,11 @@ export default function VideoRoom() {
     if (localStreamRef.current) {
       localStreamRef.current.getAudioTracks().forEach((t) => (t.enabled = !newMuted));
     }
-    broadcastToAll({
-      type: 'participant-update',
-      participant: { peerId: myPeerIdRef.current, isMuted: newMuted },
+    socketRef.current?.emit('participant-update', {
+      roomId,
+      update: { peerId: myPeerIdRef.current, isMuted: newMuted }
     });
-  }, [isMuted, broadcastToAll]);
+  }, [isMuted, roomId]);
 
   const toggleVideo = useCallback(() => {
     const newVideoOn = !isVideoOn;
@@ -561,11 +531,11 @@ export default function VideoRoom() {
     if (localStreamRef.current) {
       localStreamRef.current.getVideoTracks().forEach((t) => (t.enabled = newVideoOn));
     }
-    broadcastToAll({
-      type: 'participant-update',
-      participant: { peerId: myPeerIdRef.current, isVideoOn: newVideoOn },
+    socketRef.current?.emit('participant-update', {
+      roomId,
+      update: { peerId: myPeerIdRef.current, isVideoOn: newVideoOn }
     });
-  }, [isVideoOn, broadcastToAll]);
+  }, [isVideoOn, roomId]);
 
   const toggleScreenShare = useCallback(async () => {
     if (!isScreenSharing) {
@@ -574,20 +544,10 @@ export default function VideoRoom() {
         screenStreamRef.current = screenStream;
         const screenTrack = screenStream.getVideoTracks()[0];
 
-        // Replace video track in all connections
-        mediaConnectionsRef.current.forEach((call) => {
-          try {
-            const pc = (call as any).peerConnection;
-            if (pc) {
-              const sender = pc.getSenders()?.find(
-                (s: RTCRtpSender) => s.track?.kind === 'video'
-              );
-              if (sender && screenTrack) {
-                sender.replaceTrack(screenTrack);
-              }
-            }
-          } catch (e) {
-            console.error('Failed to replace track:', e);
+        peerConnectionsRef.current.forEach((pc) => {
+          const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+          if (sender && screenTrack) {
+            sender.replaceTrack(screenTrack);
           }
         });
 
@@ -600,9 +560,9 @@ export default function VideoRoom() {
           stopScreenShare();
         };
 
-        broadcastToAll({
-          type: 'participant-update',
-          participant: { peerId: myPeerIdRef.current, isScreenSharing: true },
+        socketRef.current?.emit('participant-update', {
+          roomId,
+          update: { peerId: myPeerIdRef.current, isScreenSharing: true }
         });
       } catch (err) {
         console.log('Screen share cancelled');
@@ -610,7 +570,7 @@ export default function VideoRoom() {
     } else {
       stopScreenShare();
     }
-  }, [isScreenSharing, broadcastToAll]);
+  }, [isScreenSharing, roomId]);
 
   const stopScreenShare = () => {
     if (screenStreamRef.current) {
@@ -621,36 +581,29 @@ export default function VideoRoom() {
       localVideoRef.current.srcObject = localStreamRef.current;
       const cameraTrack = localStreamRef.current.getVideoTracks()[0];
       if (cameraTrack) {
-        mediaConnectionsRef.current.forEach((call) => {
-          try {
-            const pc = (call as any).peerConnection;
-            if (pc) {
-              const sender = pc.getSenders()?.find(
-                (s: RTCRtpSender) => s.track?.kind === 'video'
-              );
-              if (sender) sender.replaceTrack(cameraTrack);
-            }
-          } catch (e) {}
+        peerConnectionsRef.current.forEach((pc) => {
+          const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+          if (sender) sender.replaceTrack(cameraTrack);
         });
       }
     }
     setIsScreenSharing(false);
-    broadcastToAll({
-      type: 'participant-update',
-      participant: { peerId: myPeerIdRef.current, isScreenSharing: false },
+    socketRef.current?.emit('participant-update', {
+      roomId,
+      update: { peerId: myPeerIdRef.current, isScreenSharing: false }
     });
   };
 
   const sendChatMessage = () => {
     if (!chatMessage.trim()) return;
     const msg: ChatMsg = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       sender: myName,
       text: chatMessage,
       time: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
     };
-    setMessages((prev) => [...prev, msg]);
-    broadcastToAll({ type: 'chat-message', message: msg });
+    // Не добавляем локально - сервер разошлет всем, включая нас
+    socketRef.current?.emit('chat-message', { roomId, message: msg });
     setChatMessage('');
   };
 
@@ -680,9 +633,7 @@ export default function VideoRoom() {
             <h2 className="text-white text-sm font-medium">
               {meeting?.title || 'Видеовстреча'}
             </h2>
-            <p className="text-gray-400 text-xs">
-              ID: {roomId} {role === 'host' && '• Вы организатор'}
-            </p>
+            <p className="text-gray-400 text-xs">ID: {roomId}</p>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -690,10 +641,17 @@ export default function VideoRoom() {
             <Clock className="w-4 h-4" />
             {elapsedTime}
           </div>
-          <div className={`flex items-center gap-1.5 text-xs ${isConnected ? 'text-green-400' : 'text-yellow-400'}`}>
+          <div className={`flex items-center gap-1.5 text-xs ${isConnected ? 'text-green-400' : 'text-red-400'}`}>
             {isConnected ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
-            {isConnected ? 'Подключено' : 'Подключение...'}
+            {isConnected ? 'Подключено' : 'Нет связи'}
           </div>
+          <button
+            onClick={() => setShowDiagnostics(!showDiagnostics)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-white/10 text-gray-300 rounded-lg hover:bg-white/20 transition text-xs"
+          >
+            <AlertCircle className="w-3.5 h-3.5" />
+            Диагностика
+          </button>
           {isRecording && (
             <div className="flex items-center gap-1.5 text-red-400 text-sm animate-pulse">
               <Circle className="w-4 h-4 fill-current" />
@@ -710,27 +668,111 @@ export default function VideoRoom() {
         </div>
       </div>
 
+      {/* Media Error Banner */}
+      {mediaError && (
+        <div className="bg-yellow-500/20 border-b border-yellow-500/50 px-4 py-3">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-yellow-200 text-sm font-medium">Проблема с камерой/микрофоном</p>
+              <p className="text-yellow-300/80 text-xs mt-1">{mediaError}</p>
+              <p className="text-yellow-300/80 text-xs mt-2">
+                💡 <strong>Решение:</strong> Используйте HTTPS или localhost. 
+                <button 
+                  onClick={() => setShowDiagnostics(true)}
+                  className="underline ml-1 hover:text-yellow-200"
+                >
+                  Подробнее
+                </button>
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Diagnostics Panel */}
+      {showDiagnostics && (
+        <div className="bg-slate-800/95 border-b border-white/10 px-4 py-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-white font-medium text-sm">Диагностика подключения</h3>
+            <button onClick={() => setShowDiagnostics(false)} className="text-gray-400 hover:text-white">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                {isConnected ? <CheckCircle className="w-4 h-4 text-green-400" /> : <XCircle className="w-4 h-4 text-red-400" />}
+                <span className="text-gray-300">Сервер сигнализации</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {mediaTest?.isSecureContext ? <CheckCircle className="w-4 h-4 text-green-400" /> : <XCircle className="w-4 h-4 text-red-400" />}
+                <span className="text-gray-300">Безопасный контекст (HTTPS)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {mediaTest?.camera ? <CheckCircle className="w-4 h-4 text-green-400" /> : <XCircle className="w-4 h-4 text-red-400" />}
+                <span className="text-gray-300">Камера</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {mediaTest?.microphone ? <CheckCircle className="w-4 h-4 text-green-400" /> : <XCircle className="w-4 h-4 text-red-400" />}
+                <span className="text-gray-300">Микрофон</span>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                {localStreamRef.current ? <CheckCircle className="w-4 h-4 text-green-400" /> : <XCircle className="w-4 h-4 text-red-400" />}
+                <span className="text-gray-300">Локальный видеопоток</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-gray-300">Участники: {participants.length}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-gray-300">Видеопотоки: {remoteStreams.length}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-gray-300">PeerConnections: {peerConnectionsRef.current.size}</span>
+              </div>
+            </div>
+          </div>
+          {mediaTest?.error && (
+            <div className="mt-3 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+              <p className="text-red-300 text-xs">{mediaTest.error}</p>
+            </div>
+          )}
+          {!mediaTest?.isSecureContext && (
+            <div className="mt-3 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+              <p className="text-blue-300 text-xs font-medium mb-1">💡 Как включить HTTPS:</p>
+              <p className="text-blue-300/80 text-xs">1. Запустите: <code className="bg-black/30 px-1 rounded">./generate-cert.sh</code></p>
+              <p className="text-blue-300/80 text-xs">2. Перезапустите сервер: <code className="bg-black/30 px-1 rounded">node server.js</code></p>
+              <p className="text-blue-300/80 text-xs">3. Откройте: <code className="bg-black/30 px-1 rounded">https://ВАШ_IP:3000</code></p>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Main Content */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Video Grid */}
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Video Grid - все участники включая локального */}
         <div className="flex-1 p-4 flex items-center justify-center">
           <div className={`grid gap-3 w-full h-full ${
             totalParticipants === 1 ? 'grid-cols-1 max-w-3xl' :
-            totalParticipants === 2 ? 'grid-cols-1 max-w-3xl sm:grid-cols-2' :
+            totalParticipants === 2 ? 'grid-cols-1 sm:grid-cols-2 max-w-5xl' :
             totalParticipants <= 4 ? 'grid-cols-2' :
             totalParticipants <= 6 ? 'grid-cols-3' :
             'grid-cols-4'
           }`}>
             {/* My Video */}
-            <div className="relative bg-slate-800 rounded-2xl overflow-hidden border border-white/10 group min-h-[200px]">
-              {(isVideoOn || isScreenSharing) ? (
+            <div 
+              className="relative bg-slate-800 rounded-2xl overflow-hidden border border-white/10 group min-h-[200px] cursor-pointer hover:border-purple-500/50 transition-all"
+              onClick={() => setExpandedVideo('local')}
+            >
+              {(isVideoOn || isScreenSharing) && localStreamReady ? (
                 <video
                   ref={localVideoRef}
                   autoPlay
                   muted
                   playsInline
-                  className="w-full h-full object-cover"
-                  style={{ transform: isScreenSharing ? 'none' : 'scaleX(-1)' }}
+                  className={`w-full h-full object-cover ${isScreenSharing ? '' : 'scale-x-[-1]'}`}
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-purple-900/50 to-blue-900/50">
@@ -756,14 +798,25 @@ export default function VideoRoom() {
                   📺 Демонстрация экрана
                 </div>
               )}
+              <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="px-2 py-1 bg-black/60 backdrop-blur rounded-lg text-white text-xs">
+                  Нажмите для увеличения
+                </div>
+              </div>
             </div>
 
-            {/* Remote Participants with video */}
+            {/* Remote Participants */}
             {remoteStreams.map((remote) => (
-              <RemoteVideoTile key={remote.peerId} stream={remote.stream} name={remote.name} peerId={remote.peerId} />
+              <RemoteVideoTile
+                key={remote.peerId}
+                stream={remote.stream}
+                name={remote.name}
+                peerId={remote.peerId}
+                onClick={() => setExpandedVideo(remote.peerId)}
+              />
             ))}
 
-            {/* Participants without video stream */}
+            {/* Participants without video */}
             {participants
               .filter((p) => p.peerId !== myPeerIdRef.current)
               .filter((p) => !remoteStreams.find((s) => s.peerId === p.peerId))
@@ -788,6 +841,17 @@ export default function VideoRoom() {
                   </div>
                 </div>
               ))}
+
+            {/* Если нет удаленных участников, показываем заглушку */}
+            {remoteStreams.length === 0 && participants.filter(p => p.peerId !== myPeerIdRef.current).length === 0 && (
+              <div className="relative bg-slate-800/50 rounded-2xl overflow-hidden border border-white/10 min-h-[200px] flex items-center justify-center">
+                <div className="text-center">
+                  <Users className="w-16 h-16 text-gray-600 mx-auto mb-3" />
+                  <p className="text-gray-400 text-sm">Ожидание участников...</p>
+                  <p className="text-gray-500 text-xs mt-1">Поделитесь ссылкой для приглашения</p>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -885,7 +949,9 @@ export default function VideoRoom() {
       <div className="flex items-center justify-center gap-2 sm:gap-3 px-4 py-3 bg-slate-800/80 backdrop-blur border-t border-white/10">
         <button
           onClick={toggleMute}
+          disabled={!localStreamRef.current}
           className={`w-12 h-12 rounded-full flex items-center justify-center transition ${
+            !localStreamRef.current ? 'bg-gray-500/20 text-gray-500 cursor-not-allowed' :
             isMuted
               ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
               : 'bg-white/10 text-white hover:bg-white/20'
@@ -897,7 +963,9 @@ export default function VideoRoom() {
 
         <button
           onClick={toggleVideo}
+          disabled={!localStreamRef.current}
           className={`w-12 h-12 rounded-full flex items-center justify-center transition ${
+            !localStreamRef.current ? 'bg-gray-500/20 text-gray-500 cursor-not-allowed' :
             !isVideoOn
               ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
               : 'bg-white/10 text-white hover:bg-white/20'
@@ -976,65 +1044,63 @@ export default function VideoRoom() {
           <span className="hidden sm:inline">Выйти</span>
         </button>
       </div>
-    </div>
-  );
-}
 
-// Remote video component
-function RemoteVideoTile({ stream, name, peerId }: { stream: MediaStream; name: string; peerId: string }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-
-  useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.srcObject = stream;
-    }
-  }, [stream]);
-
-  const videoTracks = stream.getVideoTracks();
-  const hasVideo = videoTracks.length > 0 && videoTracks[0].enabled;
-
-  if (!hasVideo) {
-    return (
-      <div className="relative bg-slate-800 rounded-2xl overflow-hidden border border-white/10 min-h-[200px]">
-        <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-900/30 to-purple-900/30">
-          <div className="w-24 h-24 bg-blue-500/30 rounded-full flex items-center justify-center">
-            <span className="text-4xl text-blue-200 font-bold">
-              {name[0]?.toUpperCase()}
-            </span>
+      {/* Expanded Video Modal */}
+      {expandedVideo && (
+        <div 
+          className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4"
+          onClick={() => setExpandedVideo(null)}
+        >
+          <div className="relative w-full h-full max-w-7xl max-h-[90vh]">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setExpandedVideo(null);
+              }}
+              className="absolute top-4 right-4 z-10 w-12 h-12 bg-white/10 hover:bg-white/20 backdrop-blur rounded-full flex items-center justify-center text-white transition"
+            >
+              <X className="w-6 h-6" />
+            </button>
+            
+            <div className="w-full h-full bg-slate-800 rounded-2xl overflow-hidden">
+              {expandedVideo === 'local' ? (
+                <video
+                  autoPlay
+                  muted
+                  playsInline
+                  className="w-full h-full object-contain"
+                  ref={(el) => {
+                    if (el && localStreamRef.current) {
+                      el.srcObject = localStreamRef.current;
+                    }
+                  }}
+                  style={{ transform: isScreenSharing ? 'none' : 'scaleX(-1)' }}
+                />
+              ) : (
+                <video
+                  autoPlay
+                  playsInline
+                  className="w-full h-full object-contain"
+                  ref={(el) => {
+                    if (el) {
+                      const remote = remoteStreams.find(s => s.peerId === expandedVideo);
+                      if (remote) {
+                        el.srcObject = remote.stream;
+                      }
+                    }
+                  }}
+                />
+              )}
+              
+              <div className="absolute bottom-6 left-6">
+                <span className="px-4 py-2 bg-black/60 backdrop-blur rounded-lg text-white text-sm font-medium">
+                  {expandedVideo === 'local' ? `${myName} (Вы)` : remoteStreams.find(s => s.peerId === expandedVideo)?.name}
+                </span>
+              </div>
+            </div>
           </div>
         </div>
-        <div className="absolute bottom-3 left-3 flex items-center gap-2">
-          <span className="px-2.5 py-1 bg-black/60 backdrop-blur rounded-lg text-white text-xs font-medium">
-            {name}
-          </span>
-          {!stream.getAudioTracks()[0]?.enabled && (
-            <span className="px-2 py-1 bg-red-500/80 rounded-lg">
-              <MicOff className="w-3 h-3 text-white" />
-            </span>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="relative bg-slate-800 rounded-2xl overflow-hidden border border-white/10 min-h-[200px]">
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        className="w-full h-full object-cover"
-      />
-      <div className="absolute bottom-3 left-3 flex items-center gap-2">
-        <span className="px-2.5 py-1 bg-black/60 backdrop-blur rounded-lg text-white text-xs font-medium">
-          {name}
-        </span>
-        {!stream.getAudioTracks()[0]?.enabled && (
-          <span className="px-2 py-1 bg-red-500/80 rounded-lg">
-            <MicOff className="w-3 h-3 text-white" />
-          </span>
-        )}
-      </div>
+      )}
     </div>
   );
 }

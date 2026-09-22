@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { Meeting } from '../types';
+import { generateUUID } from '../utils/uuid';
 
 interface MeetingState {
   meetings: Meeting[];
@@ -18,7 +19,7 @@ export const useMeetingStore = create<MeetingState>()(
       createMeeting: (title: string, hostId: string, hostName: string) => {
         const roomId = Math.random().toString(36).substring(2, 10);
         const meeting: Meeting = {
-          id: crypto.randomUUID(),
+          id: generateUUID(),
           title,
           roomId,
           hostId,

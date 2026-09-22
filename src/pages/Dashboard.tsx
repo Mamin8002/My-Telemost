@@ -25,7 +25,7 @@ export default function Dashboard() {
     const meeting = createMeeting(meetingTitle, user.id, user.name);
     setMeetingTitle('');
     setShowCreateModal(false);
-    navigate(`/room/${meeting.roomId}`);
+    navigate(`/room/${meeting.roomId}?name=${encodeURIComponent(user.name)}&muted=false&video=true`);
   };
 
   const handleCopyLink = (roomId: string) => {
@@ -236,7 +236,7 @@ export default function Dashboard() {
                       </button>
                       {meeting.status !== 'ended' && (
                         <button
-                          onClick={() => navigate(`/room/${meeting.roomId}`)}
+                          onClick={() => navigate(`/room/${meeting.roomId}?name=${encodeURIComponent(user?.name || 'Пользователь')}&muted=false&video=true`)}
                           className="flex items-center gap-1.5 px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition text-sm"
                         >
                           <Video className="w-4 h-4" />

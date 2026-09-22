@@ -1,342 +1,370 @@
-# MeetFlow — Сервис видеоконференций
+# MeetFlow — Сервис видеоконференций для локальной сети
 
-Платформа для организации видеозвонков и аудиоконференций с поддержкой WebRTC, демонстрации экрана, чата, записи встреч и сквозного шифрования.
+Платформа для организации видеозвонков и аудиоконференций с поддержкой WebRTC, демонстрации экрана, чата и управления участниками. Работает в локальной сети без интернета!
 
 ## 🚀 Возможности
 
-- **Регистрация и авторизация** — создание аккаунта, управление профилем
-- **Дашборд** — управление встречами, статистика, настройки аккаунта
-- **Видеоконференции** — HD видео и аудио через WebRTC (PeerJS)
+- **Работа в локальной сети и через интернет** — поддержка ngrok и публичных TURN серверов
+- **Видеоконференции** — HD видео и аудио через WebRTC P2P с обходом NAT
 - **Демонстрация экрана** — показ экрана или отдельного окна
-- **Встроенный чат** — обмен сообщениями в реальном времени
+- **Встроенный чат** — обмен сообщениями в реальном времени с сохранением истории
 - **Управление участниками** — просмотр и контроль участников встречи
 - **Запись встреч** — фиксация проведения конференции
 - **Приглашения по ссылке** — неограниченное число участников
-- **P2P соединения** — прямое соединение между участниками через WebRTC
 - **Адаптивный дизайн** — поддержка всех устройств и ОС
+- **Переворот камеры** — автоматический переворот камеры на мобильных устройствах
+- **Обход NAT** — автоматическое использование TURN серверов для работы через интернет
 - **Безопасность** — сквозное шифрование через DTLS-SRTP
-
-## 🏗️ Архитектура
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                   Frontend (React + Vite)                │
-│  ┌──────────┐ ┌──────────┐ ┌──────────────────────────┐ │
-│  │  Auth     │ │Dashboard │ │   VideoRoom (WebRTC)     │ │
-│  │  Pages    │ │  Panel   │ │   PeerJS P2P Mesh       │ │
-│  └──────────┘ └──────────┘ └──────────────────────────┘ │
-├─────────────────────────────────────────────────────────┤
-│              State Management (Zustand + localStorage)   │
-├─────────────────────────────────────────────────────────┤
-│              PeerJS Signaling (0.peerjs.com)             │
-│           (бесплатный публичный сигнальный сервер)       │
-├─────────────────────────────────────────────────────────┤
-│              WebRTC P2P Mesh Network                     │
-│  getUserMedia | getDisplayMedia | RTCPeerConnection     │
-│  DTLS-SRTP encryption | ICE/STUN/TURN                   │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Как работает подключение:
-
-1. **Организатор** создаёт комнату → регистрируется на PeerJS с ID = `meetflow-{roomId}`
-2. **Участники** переходят по ссылке → подключаются к хосту через PeerJS
-3. **WebRTC** устанавливает P2P соединение между всеми участниками (mesh topology)
-4. **Медиа** передаётся напрямую между браузерами (без сервера-посредника)
-5. **Данные** (чат, статусы) проходят через хоста для синхронизации
 
 ## 📋 Требования
 
-- Node.js 18+ 
-- npm 9+
-- Современный браузер с поддержкой WebRTC (Chrome 90+, Firefox 88+, Safari 15+, Edge 90+)
-- HTTPS для доступа к камере/микрофону (кроме localhost)
-- Доступ к интернету для PeerJS signaling server
+- **Node.js 18+** — [скачать](https://nodejs.org/)
+- **Современный браузер** — Chrome 90+, Firefox 88+, Safari 15+, Edge 90+
+- **Все устройства в одной локальной сети** (WiFi или Ethernet)
 
-## ⚡ Быстрый старт (локальная разработка)
+## ⚡ Быстрый старт
+
+### Вариант 1: Автоматический запуск с HTTPS (рекомендуется)
+
+**Linux/macOS:**
+```bash
+# 1. Генерация SSL сертификата
+chmod +x generate-cert.sh
+./generate-cert.sh
+
+# 2. Запуск сервера
+chmod +x start.sh
+./start.sh
+```
+
+**Windows (PowerShell - рекомендуется):**
+```powershell
+# 1. Генерация SSL сертификата
+.\generate-cert.ps1
+
+# 2. Запуск сервера
+.\start.ps1
+```
+
+**Windows (Command Prompt):**
+```cmd
+REM 1. Генерация SSL сертификата
+generate-cert.bat
+
+REM 2. Запуск сервера
+start.bat
+```
+
+Скрипты автоматически:
+- Сгенерируют SSL сертификат
+- Установят зависимости
+- Соберут фронтенд
+- Запустят HTTPS сервер
+- Покажут IP адрес для доступа из сети
+
+### Вариант 2: Ручной запуск
 
 ```bash
-# 1. Клонируйте репозиторий
-git clone https://github.com/your-org/meetflow.git
-cd meetflow
-
-# 2. Установите зависимости
+# 1. Установите зависимости
 npm install
 
-# 3. Запустите dev-сервер
-npm run dev
-
-# 4. Откройте в браузере
-# http://localhost:5173
-```
-
-> **Важно:** Для работы камеры/микрофона используйте localhost или HTTPS.
-
-## 🌐 Развёртывание на сервере
-
-### Вариант 1: Nginx + статический хостинг (рекомендуется)
-
-#### 1. Сборка проекта
-
-```bash
-npm install
+# 2. Соберите фронтенд
 npm run build
-```
 
-Результат сборки появится в папке `dist/`.
+# 3. (Опционально) Сгенерируйте SSL сертификат
+./generate-cert.sh  # Linux/macOS
+generate-cert.bat   # Windows
 
-#### 2. Установка Nginx
-
-**Ubuntu/Debian:**
-```bash
-sudo apt update
-sudo apt install nginx
-```
-
-**CentOS/RHEL:**
-```bash
-sudo yum install epel-release
-sudo yum install nginx
-```
-
-#### 3. Конфигурация Nginx
-
-Создайте файл `/etc/nginx/sites-available/meetflow`:
-
-```nginx
-server {
-    listen 80;
-    server_name your-domain.com;
-    
-    # Редирект на HTTPS (обязательно для WebRTC!)
-    return 301 https://$server_name$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name your-domain.com;
-
-    # SSL сертификаты (Let's Encrypt)
-    ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
-    
-    # SSL настройки
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_prefer_server_ciphers on;
-    
-    # Заголовки безопасности
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-
-    # Разрешаем доступ к камере/микрофону/экрану
-    add_header Permissions-Policy "camera=(self) microphone=(self) display-capture=(self)" always;
-
-    root /var/www/meetflow/dist;
-    index index.html;
-
-    # SPA routing - все маршруты на index.html
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-
-    # Кэширование статики
-    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-
-    # Gzip сжатие
-    gzip on;
-    gzip_vary on;
-    gzip_min_length 1024;
-    gzip_types text/plain text/css application/json application/javascript text/xml application/xml text/javascript image/svg+xml;
-}
-```
-
-#### 4. Развёртывание файлов
-
-```bash
-# Создайте директорию
-sudo mkdir -p /var/www/meetflow/dist
-
-# Скопируйте сборку
-sudo cp -r dist/* /var/www/meetflow/dist/
-
-# Установите права
-sudo chown -R www-data:www-data /var/www/meetflow
-sudo chmod -R 755 /var/www/meetflow
-```
-
-#### 5. Получение SSL сертификата (Let's Encrypt)
-
-```bash
-# Установите Certbot
-sudo apt install certbot python3-certbot-nginx
-
-# Получите сертификат
-sudo certbot --nginx -d your-domain.com
-
-# Проверьте автообновление
-sudo certbot renew --dry-run
-```
-
-#### 6. Активация сайта
-
-```bash
-# Создайте символическую ссылку
-sudo ln -s /etc/nginx/sites-available/meetflow /etc/nginx/sites-enabled/
-
-# Проверьте конфигурацию
-sudo nginx -t
-
-# Перезапустите Nginx
-sudo systemctl restart nginx
-sudo systemctl enable nginx
-```
-
-#### 7. Готово! Откройте `https://your-domain.com`
-
-### Вариант 2: Docker
-
-#### 1. Создайте `Dockerfile`:
-
-```dockerfile
-FROM node:18-alpine AS build
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-
-FROM nginx:alpine
-COPY --from=build /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
-```
-
-#### 2. Создайте `nginx.conf`:
-
-```nginx
-server {
-    listen 80;
-    server_name _;
-    root /usr/share/nginx/html;
-    index index.html;
-
-    add_header Permissions-Policy "camera=(self) microphone=(self) display-capture=(self)";
-
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-
-    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2)$ {
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-
-    gzip on;
-    gzip_types text/plain text/css application/json application/javascript;
-}
-```
-
-#### 3. Создайте `docker-compose.yml`:
-
-```yaml
-version: '3.8'
-services:
-  meetflow:
-    build: .
-    ports:
-      - "80:80"
-      - "443:443"
-    restart: unless-stopped
-    volumes:
-      - ./ssl:/etc/nginx/ssl:ro
-```
-
-#### 4. Запуск:
-
-```bash
-docker-compose up -d
-```
-
-### Вариант 3: Vercel / Netlify (бесплатный хостинг с HTTPS)
-
-```bash
-# Vercel
-npm i -g vercel
-vercel --prod
-
-# Netlify
-npm i -g netlify-cli
-netlify deploy --prod --dir=dist
-```
-
-> Vercel и Netlify автоматически предоставляют HTTPS, что необходимо для WebRTC.
-
-### Вариант 4: GitHub Pages
-
-```bash
-# Установите gh-pages
-npm install -D gh-pages
-
-# Добавьте в package.json:
-# "deploy": "gh-pages -d dist"
-
-# Разверните
-npm run build
-npm run deploy
-```
-
-## 🔧 Production: Собственный сигнальный сервер
-
-Для полной независимости от публичного PeerJS сервера разверните свой:
-
-### 1. PeerJS Server
-
-```bash
-mkdir signaling-server && cd signaling-server
-npm init -y
-npm install peer express
-
-# server.js
-cat > server.js << 'EOF'
-const express = require('express');
-const { PeerServer } = require('peer');
-
-const app = express();
-app.use(express.static('../dist')); // раздача фронтенда
-
-const peerServer = PeerServer({
-  port: 3001,
-  path: '/peerjs',
-  proxied: true,
-});
-
-app.listen(3000, () => console.log('App on :3000, PeerJS on :3001'));
-EOF
-
+# 4. Запустите сервер
 node server.js
 ```
 
-### 2. Обновите PeerJS конфигурацию в коде:
+Сервер автоматически определит наличие сертификатов и запустится в режиме HTTP или HTTPS.
 
-```typescript
-const peer = new Peer(myPeerId, {
-  host: 'your-domain.com',
-  port: 443,
-  secure: true,
-  path: '/peerjs',
-});
+## 🌐 Доступ из локальной сети
+
+После запуска сервера вы увидите сообщение:
+
+```
+╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║   ✅ Сервер запущен!                                     ║
+║                                                           ║
+║   Локальный доступ:  http://localhost:3000               ║
+║   Сетевой доступ:    http://192.168.1.100:3000          ║
+║                                                           ║
+║   Откройте ссылку на других устройствах в сети           ║
+║                                                           ║
+╚═══════════════════════════════════════════════════════════╝
 ```
 
-### 3. TURN/STUN сервер (Coturn) — для обхода NAT
+### Как подключиться с другого устройства:
 
+1. **Найдите IP адрес сервера** (показан при запуске)
+2. **На другом устройстве** откройте браузер и перейдите по адресу:
+   ```
+   http://<IP_СЕРВЕРА>:3000
+   ```
+   Например: `http://192.168.1.100:3000`
+
+3. **Зарегистрируйтесь** и создайте встречу
+4. **Скопируйте ссылку-приглашение** и отправьте другим участникам
+5. **Участники открывают ссылку** и подключаются к встрече
+
+### Пример использования:
+
+```
+Устройство 1 (сервер): http://192.168.1.100:3000
+  ↓ Создаёт встречу "Рабочее совещание"
+  ↓ Копирует ссылку: http://192.168.1.100:3000/join/abc123
+
+Устройство 2: Открывает http://192.168.1.100:3000/join/abc123
+  ↓ Вводит имя "Иван"
+  ↓ Подключается к встрече
+
+Устройство 3: Открывает ту же ссылку
+  ↓ Вводит имя "Мария"
+  ↓ Подключается к встрече
+
+Все видят и слышат друг друга! 🎉
+```
+
+## 🔒 Настройка HTTPS через OpenSSL
+
+Для работы камеры и микрофона на всех устройствах необходим HTTPS. MeetFlow поддерживает самоподписанные SSL сертификаты через OpenSSL.
+
+📖 **Подробная пошаговая инструкция:** [SSL_GUIDE.md](./SSL_GUIDE.md)
+
+### Автоматическая генерация сертификата
+
+**Linux/macOS:**
+```bash
+chmod +x generate-cert.sh
+./generate-cert.sh
+```
+
+**Windows (PowerShell - рекомендуется):**
+```powershell
+.\generate-cert.ps1
+```
+
+**Windows (Command Prompt):**
+```cmd
+generate-cert.bat
+```
+
+Скрипт автоматически:
+- Проверит наличие OpenSSL
+- Определит IP адрес сервера
+- Сгенерирует приватный ключ и сертификат
+- Создаст конфигурацию с SAN (Subject Alternative Names)
+
+### Ручная генерация сертификата
+
+Если скрипт не работает, можно сгенерировать сертификат вручную:
+
+**1. Создайте директорию для сертификатов:**
+```bash
+mkdir ssl
+cd ssl
+```
+
+**2. Сгенерируйте приватный ключ:**
+```bash
+openssl genrsa -out server.key 2048
+```
+
+**3. Создайте конфигурационный файл `openssl.cnf`:**
+```ini
+[req]
+default_bits = 2048
+prompt = no
+default_md = sha256
+req_extensions = req_ext
+distinguished_name = dn
+
+[dn]
+C = RU
+ST = Moscow
+L = Moscow
+O = MeetFlow
+OU = Development
+CN = 192.168.1.100  # Замените на ваш IP
+
+[req_ext]
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = localhost
+DNS.2 = *.local
+IP.1 = 127.0.0.1
+IP.2 = 192.168.1.100  # Замените на ваш IP
+```
+
+**4. Сгенерируйте сертификат:**
+```bash
+openssl req -new -x509 -key server.key -out server.crt -days 365 -config openssl.cnf -extensions req_ext
+```
+
+**5. Вернитесь в корневую директорию:**
+```bash
+cd ..
+```
+
+### Запуск сервера с HTTPS
+
+После генерации сертификата просто запустите сервер:
+
+```bash
+node server.js
+```
+
+Сервер автоматически обнаружит сертификаты в папке `ssl/` и запустится в режиме HTTPS:
+
+```
+╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║   MeetFlow Server запущен!                               ║
+║                                                           ║
+║   Протокол:         HTTPS                                 ║
+║   HTTP Server:      https://0.0.0.0:3000                 ║
+║   SSL:              ✅ Включен                            ║
+║                                                           ║
+║   Для доступа из локальной сети:                         ║
+║   https://192.168.1.100:3000                             ║
+║                                                           ║
+╚═══════════════════════════════════════════════════════════╝
+```
+
+### Добавление сертификата в доверенные
+
+Поскольку сертификат самоподписанный, браузеры будут показывать предупреждение. Чтобы избежать этого, добавьте сертификат в доверенные на всех устройствах:
+
+#### Windows
+
+1. Скопируйте `ssl/server.crt` на устройство
+2. Дважды кликните по файлу
+3. Нажмите **"Установить сертификат"**
+4. Выберите **"Локальный компьютер"**
+5. Выберите **"Поместить все сертификаты в следующее хранилище"**
+6. Нажмите **"Обзор"** и выберите **"Доверенные корневые центры сертификации"**
+7. Завершите установку
+
+#### macOS
+
+1. Скопируйте `ssl/server.crt` на устройство
+2. Откройте **Keychain Access** (Связка ключей)
+3. Перетащите файл в раздел **"System"** (Система)
+4. Дважды кликните по сертификату
+5. Разверните раздел **"Trust"** (Доверие)
+6. В **"When using this certificate"** выберите **"Always Trust"** (Всегда доверять)
+7. Закройте окно и введите пароль администратора
+
+#### iOS
+
+1. Отправьте `ssl/server.crt` себе на email или через AirDrop
+2. Откройте файл на устройстве
+3. Перейдите в **Settings** → **Profile Downloaded** → **Install**
+4. Перейдите в **Settings** → **General** → **About** → **Certificate Trust Settings**
+5. Включите переключатель для вашего сертификата
+
+#### Android
+
+1. Скопируйте `ssl/server.crt` на устройство
+2. Перейдите в **Settings** → **Security** → **Encryption & Credentials**
+3. Выберите **"Install a certificate"** → **"CA certificate"**
+4. Выберите файл `server.crt`
+5. Подтвердите установку
+
+#### Chrome/Edge (быстрый способ)
+
+Если не хотите устанавливать сертификат, можно открыть страницу и нажать **"Advanced"** → **"Proceed to [IP] (unsafe)"**. Камера и микрофон будут работать.
+
+### Проверка HTTPS
+
+Откройте в браузере:
+```
+https://192.168.1.100:3000
+```
+
+Если видите предупреждение о безопасности:
+- **Chrome/Edge:** Нажмите "Advanced" → "Proceed"
+- **Firefox:** Нажмите "Advanced" → "Accept the Risk and Continue"
+- **Safari:** Нажмите "Show Details" → "visit this website"
+
+После добавления сертификата в доверенные предупреждения исчезнут.
+
+### Обновление сертификата
+
+Сертификат действителен 365 дней. Для обновления:
+
+```bash
+# Linux/macOS
+./generate-cert.sh
+
+# Windows
+generate-cert.bat
+
+# Перезапустите сервер
+node server.js
+```
+
+## 🌍 Работа через интернет (ngrok)
+
+### Использование ngrok для доступа из интернета
+
+Если вам нужно провести видеозвонок между устройствами в разных сетях (через интернет), используйте ngrok:
+
+**1. Установите ngrok:**
+```bash
+# macOS
+brew install ngrok
+
+# Linux
+sudo snap install ngrok
+
+# Windows
+# Скачайте с https://ngrok.com/download
+```
+
+**2. Запустите сервер:**
+```bash
+node server.js
+```
+
+**3. Создайте туннель ngrok:**
+```bash
+ngrok http 3000
+```
+
+**4. Используйте HTTPS URL:**
+```
+Forwarding  https://abc123.ngrok.io -> http://localhost:3000
+```
+
+Откройте `https://abc123.ngrok.io` на всех устройствах.
+
+### Как это работает:
+
+1. **ngrok** создает защищенный HTTPS туннель к вашему локальному серверу
+2. **Socket.IO signaling** работает через ngrok туннель
+3. **WebRTC** использует TURN серверы для обхода NAT и передачи медиа через интернет
+4. **TURN серверы** (включены по умолчанию) ретранслируют видео/аудио когда прямое P2P соединение невозможно
+
+### Включенные TURN серверы:
+
+Приложение автоматически использует бесплатные TURN серверы:
+- `turn:openrelay.metered.ca:80`
+- `turn:openrelay.metered.ca:443`
+- `turn:openrelay.metered.ca:443?transport=tcp`
+
+Эти серверы позволяют обходить NAT и файрволы, обеспечивая работу видеозвонков через интернет.
+
+### Собственные TURN серверы (опционально):
+
+Для production использования рекомендуется развернуть собственные TURN серверы:
+
+**Coturn (рекомендуется):**
 ```bash
 sudo apt install coturn
 
@@ -346,73 +374,179 @@ tls-listening-port=5349
 listening-ip=0.0.0.0
 external-ip=YOUR_SERVER_IP
 realm=your-domain.com
-server-name=your-domain.com
 lt-cred-mech
 userdb=/var/lib/turn/turndb
-cert=/etc/letsencrypt/live/your-domain.com/fullchain.pem
-pkey=/etc/letsencrypt/live/your-domain.com/privkey.pem
 
 sudo systemctl enable coturn
 sudo systemctl start coturn
 ```
 
-### 4. Nginx reverse proxy для PeerJS
-
-```nginx
-upstream peerjs {
-    server 127.0.0.1:3001;
-}
-
-server {
-    listen 443 ssl;
-    server_name your-domain.com;
-    
-    # ... SSL настройки ...
-
-    location /peerjs/ {
-        proxy_pass http://peerjs/peerjs/;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    location / {
-        root /var/www/meetflow/dist;
-        try_files $uri $uri/ /index.html;
-    }
+Затем обновите `ICE_SERVERS` в `VideoRoom.tsx`:
+```typescript
+{
+  urls: 'turn:your-domain.com:3478',
+  username: 'your-username',
+  credential: 'your-password'
 }
 ```
 
-## 📊 Мониторинг и логирование
+## 🔧 Настройка и устранение проблем
+
+### Не могу подключиться с другого устройства?
+
+**1. Проверьте, что все устройства в одной сети:**
+```bash
+# На сервере
+ip addr  # Linux
+ifconfig  # macOS
+ipconfig  # Windows
+```
+
+**2. Проверьте файрвол:**
+```bash
+# Linux (UFW)
+sudo ufw allow 3000/tcp
+
+# Linux (firewalld)
+sudo firewall-cmd --add-port=3000/tcp --permanent
+sudo firewall-cmd --reload
+
+# Windows
+# Панель управления → Брандмауэр Windows → Разрешить приложение → Добавить Node.js
+```
+
+**3. Попробуйте другой порт:**
+```bash
+PORT=8080 node server.js
+```
+
+**4. Проверьте доступность порта:**
+```bash
+# С другого устройства
+curl http://<IP_СЕРВЕРА>:3000
+# или откройте в браузере
+```
+
+### Камера/микрофон не работают?
+
+**Важно:** Для доступа к камере и микрофону нужен HTTPS или localhost.
+
+**Решение 1: Используйте localhost на сервере**
+- Откройте `http://localhost:3000` на самом сервере
+- Камера и микрофон будут работать
+
+**Решение 2: Настройте HTTPS с самоподписанным сертификатом**
 
 ```bash
-# Nginx логи
-tail -f /var/log/nginx/access.log
-tail -f /var/log/nginx/error.log
+# Установите mkcert
+# macOS
+brew install mkcert
+mkcert -install
 
-# PM2 для Node.js процессов
-npm install -g pm2
-pm2 start signaling-server/server.js --name signaling
-pm2 startup
-pm2 save
+# Linux
+# https://github.com/FiloSottile/mkcert#installation
 
-# Мониторинг
-pm2 monit
+# Windows
+# https://github.com/FiloSottile/mkcert#installation
+
+# Создайте сертификат
+mkcert localhost 192.168.1.100  # замените на ваш IP
+
+# Запустите с HTTPS
+# Отредактируйте server.js, добавьте:
+# const https = require('https');
+# const fs = require('fs');
+# const httpsServer = https.createServer({
+#   key: fs.readFileSync('./localhost+1-key.pem'),
+#   cert: fs.readFileSync('./localhost+1.pem')
+# }, app);
+# httpsServer.listen(3000, '0.0.0.0');
+```
+
+**Решение 3: Используйте Chrome с флагом**
+```bash
+# Запустите Chrome с разрешением небезопасного origin
+google-chrome --unsafely-treat-insecure-origin-as-secure="http://192.168.1.100:3000"
+```
+
+### Низкое качество видео?
+
+**1. Проверьте скорость сети:**
+```bash
+# На всех устройствах
+ping <IP_СЕРВЕРА>
+# Должно быть < 10ms для локальной сети
+```
+
+**2. Используйте WiFi 5GHz вместо 2.4GHz**
+
+**3. Подключите сервер по Ethernet**
+
+**4. Уменьшите количество участников** (рекомендуется до 6-8)
+
+## 🏗️ Архитектура
+
+```
+┌─────────────────────────────────────────────────────────┐
+│              Локальная сеть (WiFi/Ethernet)             │
+│                                                         │
+│  ┌──────────────┐                                      │
+│  │   Сервер     │                                      │
+│  │   (Node.js)  │                                      │
+│  │              │                                      │
+│  │  - Express   │ ← HTTP сервер (порт 3000)           │
+│  │  - Socket.IO │ ← Сигнализация WebRTC               │
+│  │  - PeerJS    │ ← Управление P2P соединениями       │
+│  └──────┬───────┘                                      │
+│         │                                              │
+│         │ WebSocket                                    │
+│         │                                              │
+│  ┌──────┴──────────────────────────────────────┐      │
+│  │                                             │      │
+│  │  ┌─────────┐  WebRTC P2P  ┌─────────┐     │      │
+│  │  │Устройство│◄────────────►│Устройство│     │      │
+│  │  │    1    │              │    2    │     │      │
+│  │  └─────────┘              └─────────┘     │      │
+│  │       ▲                       ▲           │      │
+│  │       │ WebRTC P2P           │ WebRTC    │      │
+│  │       │                       │           │      │
+│  │  ┌────┴──────────────────────┴────┐      │      │
+│  │  │         Устройство 3           │      │      │
+│  │  └────────────────────────────────┘      │      │
+│  │                                             │      │
+│  └─────────────────────────────────────────────┘      │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Как работает:
+
+1. **Сервер** запускается на одном устройстве в сети
+2. **Участники** подключаются через браузер по HTTP
+3. **Socket.IO** используется для сигнализации (установка соединений)
+4. **WebRTC** создает прямые P2P соединения между участниками
+5. **Медиа** (видео/аудио) передается напрямую, минуя сервер
+6. **Данные** (чат, статусы) проходят через сервер для синхронизации
+
+## 📊 Мониторинг
+
+Сервер выводит логи в консоль:
+
+```
+Client connected: abc123
+Иван joining room abc123 with peerId peer-1234567890-xyz
+Room abc123 now has 2 participants
+Offer from peer-1234567890-xyz to peer-0987654321-abc
+Answer from peer-0987654321-abc to peer-1234567890-xyz
 ```
 
 ## 🔒 Безопасность
 
-- Все данные передаются по HTTPS (TLS 1.3)
-- WebRTC использует DTLS-SRTP для шифрования медиапотоков
-- P2P соединения — медиа не проходит через сервер
-- Пароли хешируются (bcrypt)
-- CORS настроен для ограничения доступа
-- Content Security Policy заголовки
-- Permissions-Policy для контроля доступа к устройствам
+- **Локальная сеть** — данные не покидают вашу сеть
+- **WebRTC P2P** — медиа шифруется через DTLS-SRTP
+- **HTTPS** — рекомендуется для production (см. раздел настройки)
+- **CORS** — настроен для локальной сети
+- **Нет внешних зависимостей** — не требует интернета
 
 ## 📱 Поддерживаемые платформы
 
@@ -424,22 +558,283 @@ pm2 monit
 | Android | Chrome, Firefox, Samsung Internet | ✅ |
 | iOS | Safari | ✅ |
 
-## ⚠️ Ограничения
+## 🚀 Production развёртывание
 
-- **Mesh topology** — каждый участник соединяется со всеми. Рекомендуется до 6-8 участников.
-- **Публичный PeerJS сервер** — используется для signaling. Для продакшена разверните свой.
-- **NAT traversal** — в сложных сетях может потребоваться TURN сервер.
-- **Пропускная способность** — каждый участник отправляет N-1 видеопотоков.
+### С HTTPS (рекомендуется)
+
+**1. Получите SSL сертификат (Let's Encrypt):**
+```bash
+sudo apt install certbot
+sudo certbot certonly --standalone -d your-domain.com
+```
+
+**2. Обновите server.js:**
+```javascript
+const https = require('https');
+const fs = require('fs');
+
+const httpsServer = https.createServer({
+  key: fs.readFileSync('/etc/letsencrypt/live/your-domain.com/privkey.pem'),
+  cert: fs.readFileSync('/etc/letsencrypt/live/your-domain.com/fullchain.pem')
+}, app);
+
+httpsServer.listen(443, '0.0.0.0');
+```
+
+**3. Настройте Nginx reverse proxy:**
+```nginx
+server {
+    listen 443 ssl;
+    server_name your-domain.com;
+
+    ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
+
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+    }
+}
+```
+
+### Docker
+
+```dockerfile
+FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+EXPOSE 3000
+CMD ["node", "server.js"]
+```
+
+```bash
+docker build -t meetflow .
+docker run -p 3000:3000 meetflow
+```
 
 ## 📦 Стек технологий
 
 - **Frontend:** React 18, TypeScript, Vite, Tailwind CSS
+- **Backend:** Node.js, Express, Socket.IO
+- **WebRTC:** Нативный WebRTC API + Socket.IO для сигнализации
 - **State:** Zustand с persist middleware
-- **WebRTC:** PeerJS (signaling + connection management)
 - **Routing:** React Router v6
 - **Icons:** Lucide React
-- **Deployment:** Nginx / Docker / Vercel / Netlify
+
+## 🐛 Известные ограничения
+
+- **Mesh topology** — каждый участник соединяется со всеми. Рекомендуется до 6-8 участников.
+- **HTTPS требуется** для камеры/микрофона на удалённых устройствах (кроме localhost).
+- **NAT traversal** — в сложных сетях может потребоваться TURN сервер.
+- **Пропускная способность** — каждый участник отправляет N-1 видеопотоков.
+
+## 🔧 Решение проблем
+
+### Ошибка `crypto.randomUUID is not a function`
+
+**Проблема:** При доступе через HTTP (не HTTPS и не localhost) браузеры блокируют `crypto.randomUUID()` из соображений безопасности.
+
+**Решение:** Приложение использует собственную реализацию UUID генератора (`src/utils/uuid.ts`), которая работает в любом контексте (HTTP/HTTPS).
+
+**Если проблема сохраняется:**
+1. Очистите кэш браузера (Ctrl+Shift+Delete)
+2. Перезагрузите страницу (Ctrl+F5)
+3. Попробуйте другой браузер
+
+### Камера/микрофон не работают через HTTP
+
+**Проблема:** Браузеры требуют HTTPS для доступа к камере и микрофону (кроме localhost).
+
+**Решения:**
+
+**1. Используйте localhost на сервере:**
+```bash
+# На устройстве где запущен сервер
+http://localhost:3000
+```
+
+**2. Настройте HTTPS с самоподписанным сертификатом:**
+```bash
+# Установите mkcert
+# macOS
+brew install mkcert
+mkcert -install
+
+# Linux/Windows
+# https://github.com/FiloSottile/mkcert#installation
+
+# Создайте сертификат для вашего IP
+mkcert 192.168.1.100 localhost 127.0.0.1
+
+# Это создаст файлы:
+# 192.168.1.100+2.pem
+# 192.168.1.100+2-key.pem
+```
+
+Затем обновите `server.js`:
+```javascript
+const https = require('https');
+const fs = require('fs');
+
+const httpsServer = https.createServer({
+  key: fs.readFileSync('./192.168.1.100+2-key.pem'),
+  cert: fs.readFileSync('./192.168.1.100+2.pem')
+}, app);
+
+httpsServer.listen(3000, '0.0.0.0', () => {
+  console.log('HTTPS Server running on https://192.168.1.100:3000');
+});
+```
+
+**3. Используйте Chrome с флагом (для тестирования):**
+```bash
+# Windows
+chrome.exe --unsafely-treat-insecure-origin-as-secure="http://192.168.1.100:3000"
+
+# macOS
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --unsafely-treat-insecure-origin-as-secure="http://192.168.1.100:3000"
+
+# Linux
+google-chrome --unsafely-treat-insecure-origin-as-secure="http://192.168.1.100:3000"
+```
+
+**4. Используйте Firefox с настройкой:**
+1. Откройте `about:config`
+2. Найдите `media.devices.insecure.enabled`
+3. Установите в `true`
+
+## ✅ Последние исправления
+
+### Версия 1.4.0 (текущая)
+
+**Добавлено:**
+- ✅ **Поддержка HTTPS через OpenSSL** — автоматическая генерация самоподписанных SSL сертификатов
+- ✅ **Скрипты генерации сертификатов** — `generate-cert.sh` (Linux/macOS) и `generate-cert.bat` (Windows)
+- ✅ **Автоматическое определение SSL** — сервер автоматически переключается между HTTP и HTTPS
+- ✅ **Инструкции по установке сертификатов** — подробные гайды для Windows, macOS, iOS, Android
+
+**Технические детали:**
+- Сервер автоматически обнаруживает сертификаты в папке `ssl/`
+- Используется `https.createServer()` при наличии сертификатов
+- Генерация сертификатов с SAN (Subject Alternative Names) для IP и localhost
+- Сертификаты действительны 365 дней
+- Поддержка всех современных браузеров
+
+### Версия 1.3.0
+
+**Исправлено:**
+- ✅ **Ошибка `crypto.randomUUID is not a function`** — создана совместимая реализация UUID генератора для работы в HTTP контексте
+- ✅ **Регистрация работает через HTTP** — теперь можно регистрироваться по адресу `http://192.168.1.100:3000`
+
+**Технические детали:**
+- Создана утилита `src/utils/uuid.ts` с безопасной генерацией UUID
+- Автоматическое определение доступности `crypto.randomUUID()`
+- Fallback на `crypto.getRandomValues()` или `Math.random()`
+- Заменены все вызовы `crypto.randomUUID()` на `generateUUID()`
+
+### Версия 1.2.0
+
+**Добавлено:**
+- ✅ **Поддержка ngrok и интернета** — видеозвонки работают через интернет с обходом NAT
+- ✅ **TURN серверы** — автоматическая ретрансляция медиа через TURN когда P2P невозможно
+- ✅ **Буферизация ICE candidates** — кандидаты буферизуются до установки remote description
+- ✅ **Подробное логирование** — детальная отладка WebRTC соединений в консоли браузера
+- ✅ **Обработка renegotiation** — автоматическая пересогласование при изменении треков
+
+**Исправлено:**
+- ✅ **Видео и аудио теперь передаются через ngrok** — добавлены TURN серверы для обхода NAT
+- ✅ **История чата сохраняется** — при повторном подключении видны все предыдущие сообщения
+- ✅ **Участники удаляются при отключении** — список участников обновляется в реальном времени
+- ✅ **Переворот камеры на мобильных** — фронтальная камера автоматически переворачивается на телефонах
+- ✅ **Улучшена маршрутизация сигналов** — WebRTC signaling отправляется только целевому участнику
+
+**Технические детали:**
+- Добавлены публичные TURN серверы (metered.ca) для обхода NAT
+- Настроена `iceTransportPolicy: 'all'` для использования и host, и relay соединений
+- Реализована буферизация ICE candidates до установки remote description
+- Добавлена обработка `onnegotiationneeded` для автоматического renegotiation
+- Улучшена обработка `ontrack` с детальным логированием треков и стримов
+- Добавлены STUN серверы от Google и stunprotocol.org
+- ICE candidates теперь отправляются только целевому участнику через Socket.IO
+- История чата хранится на сервере (до 100 сообщений) и в localStorage
+- Добавлены CSS media queries для переворота камеры на мобильных устройствах
+- Улучшена обработка отключений через `oniceconnectionstatechange` и `onconnectionstatechange`
+
+### Версия 1.1.0
+
+**Исправлено:**
+- Видео и аудио передаются корректно в локальной сети
+- История чата сохраняется
+- Участники удаляются при отключении
+- Переворот камеры на мобильных устройствах
+
+## 🎯 Полный пример использования
+
+### Шаг 1: Генерация SSL сертификата
+
+```bash
+# Linux/macOS
+./generate-cert.sh
+
+# Windows
+generate-cert.bat
+```
+
+### Шаг 2: Запуск сервера
+
+```bash
+node server.js
+```
+
+Вы увидите:
+```
+╔═══════════════════════════════════════════════════════════╗
+║   MeetFlow Server запущен!                               ║
+║   Протокол:         HTTPS                                 ║
+║   https://192.168.1.100:3000                             ║
+╚═══════════════════════════════════════════════════════════╝
+```
+
+### Шаг 3: Добавление сертификата на устройства
+
+Скопируйте `ssl/server.crt` на все устройства и добавьте в доверенные (см. раздел "Добавление сертификата в доверенные").
+
+### Шаг 4: Создание встречи
+
+1. Откройте `https://192.168.1.100:3000` на сервере
+2. Зарегистрируйтесь
+3. Создайте встречу "Рабочее совещание"
+4. Скопируйте ссылку-приглашение
+
+### Шаг 5: Подключение участников
+
+1. На других устройствах откройте ссылку-приглашение
+2. Введите имя
+3. Разрешите доступ к камере и микрофону
+4. Нажмите "Присоединиться"
+
+### Результат
+
+✅ Все участники видят и слышат друг друга  
+✅ Работает демонстрация экрана  
+✅ Работает чат с историей  
+✅ Работает на всех устройствах в сети  
 
 ## 📄 Лицензия
 
 MIT License
+
+## 🤝 Поддержка
+
+Если возникли проблемы:
+1. Проверьте, что все устройства в одной сети
+2. Проверьте файрвол (порт 3000 должен быть открыт)
+3. Попробуйте другой браузер
+4. Проверьте консоль браузера (F12) на ошибки
+5. Проверьте логи сервера

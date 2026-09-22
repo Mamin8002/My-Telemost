@@ -44,3 +44,17 @@ video.mirror {
 .recording-indicator {
   animation: recording-pulse 1.5s ease-in-out infinite;
 }
+
+/* Mobile camera flip */
+@media (max-width: 768px) {
+  video.local-video:not(.screen-sharing) {
+    transform: scaleX(-1) !important;
+  }
+}
+
+/* Desktop camera flip */
+@media (min-width: 769px) {
+  video.local-video:not(.screen-sharing) {
+    transform: scaleX(-1);
+  }
+}
