@@ -6,50 +6,52 @@
 
 - **Регистрация и авторизация** — создание аккаунта, управление профилем
 - **Дашборд** — управление встречами, статистика, настройки аккаунта
-- **Видеоконференции** — HD видео и аудио через WebRTC
+- **Видеоконференции** — HD видео и аудио через WebRTC (PeerJS)
 - **Демонстрация экрана** — показ экрана или отдельного окна
 - **Встроенный чат** — обмен сообщениями в реальном времени
 - **Управление участниками** — просмотр и контроль участников встречи
 - **Запись встреч** — фиксация проведения конференции
 - **Приглашения по ссылке** — неограниченное число участников
+- **P2P соединения** — прямое соединение между участниками через WebRTC
 - **Адаптивный дизайн** — поддержка всех устройств и ОС
-- **Безопасность** — сквозное шифрование данных
+- **Безопасность** — сквозное шифрование через DTLS-SRTP
 
 ## 🏗️ Архитектура
 
 ```
-┌─────────────────────────────────────────────────┐
-│                   Frontend (React)               │
-│  ┌──────────┐ ┌──────────┐ ┌──────────────────┐ │
-│  │  Auth     │ │Dashboard │ │   VideoRoom      │ │
-│  │  Pages    │ │  Panel   │ │   (WebRTC)       │ │
-│  └──────────┘ └──────────┘ └──────────────────┘ │
-├─────────────────────────────────────────────────┤
-│              State Management (Zustand)          │
-├─────────────────────────────────────────────────┤
-│              BroadcastChannel API                │
-│           (сигнализация для демо)                │
-├─────────────────────────────────────────────────┤
-│              WebRTC (MediaStream API)            │
-│  getUserMedia | getDisplayMedia | RTCPeerConn   │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                   Frontend (React + Vite)                │
+│  ┌──────────┐ ┌──────────┐ ┌──────────────────────────┐ │
+│  │  Auth     │ │Dashboard │ │   VideoRoom (WebRTC)     │ │
+│  │  Pages    │ │  Panel   │ │   PeerJS P2P Mesh       │ │
+│  └──────────┘ └──────────┘ └──────────────────────────┘ │
+├─────────────────────────────────────────────────────────┤
+│              State Management (Zustand + localStorage)   │
+├─────────────────────────────────────────────────────────┤
+│              PeerJS Signaling (0.peerjs.com)             │
+│           (бесплатный публичный сигнальный сервер)       │
+├─────────────────────────────────────────────────────────┤
+│              WebRTC P2P Mesh Network                     │
+│  getUserMedia | getDisplayMedia | RTCPeerConnection     │
+│  DTLS-SRTP encryption | ICE/STUN/TURN                   │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### Для production-развёртывания рекомендуется:
+### Как работает подключение:
 
-- **Signaling Server** — Socket.IO / WebSocket для установки WebRTC соединений
-- **TURN/STUN серверы** — Coturn для обхода NAT
-- **SFU/MCU** — mediasoup или Janus для масштабирования
-- **База данных** — PostgreSQL для хранения пользователей и метаданных
-- **CDN** — CloudFlare / AWS CloudFront для маршрутизации
-- **Микросервисы** — Node.js / Go для обработки запросов
+1. **Организатор** создаёт комнату → регистрируется на PeerJS с ID = `meetflow-{roomId}`
+2. **Участники** переходят по ссылке → подключаются к хосту через PeerJS
+3. **WebRTC** устанавливает P2P соединение между всеми участниками (mesh topology)
+4. **Медиа** передаётся напрямую между браузерами (без сервера-посредника)
+5. **Данные** (чат, статусы) проходят через хоста для синхронизации
 
 ## 📋 Требования
 
 - Node.js 18+ 
 - npm 9+
-- Современный браузер с поддержкой WebRTC (Chrome, Firefox, Safari, Edge)
+- Современный браузер с поддержкой WebRTC (Chrome 90+, Firefox 88+, Safari 15+, Edge 90+)
 - HTTPS для доступа к камере/микрофону (кроме localhost)
+- Доступ к интернету для PeerJS signaling server
 
 ## ⚡ Быстрый старт (локальная разработка)
 
@@ -68,9 +70,11 @@ npm run dev
 # http://localhost:5173
 ```
 
+> **Важно:** Для работы камеры/микрофона используйте localhost или HTTPS.
+
 ## 🌐 Развёртывание на сервере
 
-### Вариант 1: Nginx + статический хостинг
+### Вариант 1: Nginx + статический хостинг (рекомендуется)
 
 #### 1. Сборка проекта
 
@@ -104,7 +108,7 @@ server {
     listen 80;
     server_name your-domain.com;
     
-    # Редирект на HTTPS
+    # Редирект на HTTPS (обязательно для WebRTC!)
     return 301 https://$server_name$request_uri;
 }
 
@@ -128,8 +132,8 @@ server {
     add_header X-XSS-Protection "1; mode=block" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
-    # Разрешаем доступ к камере/микрофону
-    add_header Permissions-Policy "camera=self; microphone=self; display-capture=self";
+    # Разрешаем доступ к камере/микрофону/экрану
+    add_header Permissions-Policy "camera=(self) microphone=(self) display-capture=(self)" always;
 
     root /var/www/meetflow/dist;
     index index.html;
@@ -157,7 +161,7 @@ server {
 
 ```bash
 # Создайте директорию
-sudo mkdir -p /var/www/meetflow
+sudo mkdir -p /var/www/meetflow/dist
 
 # Скопируйте сборку
 sudo cp -r dist/* /var/www/meetflow/dist/
@@ -176,7 +180,7 @@ sudo apt install certbot python3-certbot-nginx
 # Получите сертификат
 sudo certbot --nginx -d your-domain.com
 
-# Автообновление
+# Проверьте автообновление
 sudo certbot renew --dry-run
 ```
 
@@ -193,6 +197,8 @@ sudo nginx -t
 sudo systemctl restart nginx
 sudo systemctl enable nginx
 ```
+
+#### 7. Готово! Откройте `https://your-domain.com`
 
 ### Вариант 2: Docker
 
@@ -222,7 +228,7 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    add_header Permissions-Policy "camera=self; microphone=self; display-capture=self";
+    add_header Permissions-Policy "camera=(self) microphone=(self) display-capture=(self)";
 
     location / {
         try_files $uri $uri/ /index.html;
@@ -259,7 +265,7 @@ services:
 docker-compose up -d
 ```
 
-### Вариант 3: Vercel / Netlify (бесплатный хостинг)
+### Вариант 3: Vercel / Netlify (бесплатный хостинг с HTTPS)
 
 ```bash
 # Vercel
@@ -271,69 +277,65 @@ npm i -g netlify-cli
 netlify deploy --prod --dir=dist
 ```
 
-## 🔧 Production: Полная архитектура с WebRTC сервером
+> Vercel и Netlify автоматически предоставляют HTTPS, что необходимо для WebRTC.
 
-Для полноценного продакшн-решения добавьте:
+### Вариант 4: GitHub Pages
 
-### 1. Signaling Server (Socket.IO)
+```bash
+# Установите gh-pages
+npm install -D gh-pages
+
+# Добавьте в package.json:
+# "deploy": "gh-pages -d dist"
+
+# Разверните
+npm run build
+npm run deploy
+```
+
+## 🔧 Production: Собственный сигнальный сервер
+
+Для полной независимости от публичного PeerJS сервера разверните свой:
+
+### 1. PeerJS Server
 
 ```bash
 mkdir signaling-server && cd signaling-server
 npm init -y
-npm install express socket.io cors
-```
+npm install peer express
 
-```javascript
-// server.js
+# server.js
+cat > server.js << 'EOF'
 const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const cors = require('cors');
+const { PeerServer } = require('peer');
 
 const app = express();
-app.use(cors());
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+app.use(express.static('../dist')); // раздача фронтенда
 
-const rooms = new Map();
-
-io.on('connection', (socket) => {
-  socket.on('join-room', ({ roomId, userId, userName }) => {
-    socket.join(roomId);
-    if (!rooms.has(roomId)) rooms.set(roomId, new Map());
-    rooms.get(roomId).set(userId, { userId, userName, socketId: socket.id });
-    
-    socket.to(roomId).emit('user-joined', { userId, userName });
-    socket.emit('room-users', Array.from(rooms.get(roomId).values()));
-  });
-
-  socket.on('signal', ({ roomId, targetId, signal }) => {
-    io.to(targetId).emit('signal', { senderId: socket.id, signal });
-  });
-
-  socket.on('leave-room', ({ roomId, userId }) => {
-    if (rooms.has(roomId)) {
-      rooms.get(roomId).delete(userId);
-      socket.to(roomId).emit('user-left', { userId });
-    }
-  });
-
-  socket.on('disconnect', () => {
-    rooms.forEach((users, roomId) => {
-      users.forEach((user, userId) => {
-        if (user.socketId === socket.id) {
-          users.delete(userId);
-          socket.to(roomId).emit('user-left', { userId });
-        }
-      });
-    });
-  });
+const peerServer = PeerServer({
+  port: 3001,
+  path: '/peerjs',
+  proxied: true,
 });
 
-server.listen(3001, () => console.log('Signaling server on :3001'));
+app.listen(3000, () => console.log('App on :3000, PeerJS on :3001'));
+EOF
+
+node server.js
 ```
 
-### 2. TURN/STUN сервер (Coturn)
+### 2. Обновите PeerJS конфигурацию в коде:
+
+```typescript
+const peer = new Peer(myPeerId, {
+  host: 'your-domain.com',
+  port: 443,
+  secure: true,
+  path: '/peerjs',
+});
+```
+
+### 3. TURN/STUN сервер (Coturn) — для обхода NAT
 
 ```bash
 sudo apt install coturn
@@ -354,10 +356,10 @@ sudo systemctl enable coturn
 sudo systemctl start coturn
 ```
 
-### 3. Nginx reverse proxy для signaling
+### 4. Nginx reverse proxy для PeerJS
 
 ```nginx
-upstream signaling {
+upstream peerjs {
     server 127.0.0.1:3001;
 }
 
@@ -367,13 +369,15 @@ server {
     
     # ... SSL настройки ...
 
-    location /socket.io/ {
-        proxy_pass http://signaling;
+    location /peerjs/ {
+        proxy_pass http://peerjs/peerjs/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     location / {
@@ -395,16 +399,20 @@ npm install -g pm2
 pm2 start signaling-server/server.js --name signaling
 pm2 startup
 pm2 save
+
+# Мониторинг
+pm2 monit
 ```
 
 ## 🔒 Безопасность
 
 - Все данные передаются по HTTPS (TLS 1.3)
-- WebRTC использует DTLS-SRTP для шифрования медиа
+- WebRTC использует DTLS-SRTP для шифрования медиапотоков
+- P2P соединения — медиа не проходит через сервер
 - Пароли хешируются (bcrypt)
 - CORS настроен для ограничения доступа
-- Rate limiting для предотвращения атак
 - Content Security Policy заголовки
+- Permissions-Policy для контроля доступа к устройствам
 
 ## 📱 Поддерживаемые платформы
 
@@ -413,8 +421,24 @@ pm2 save
 | Windows | Chrome, Edge, Firefox | ✅ |
 | macOS | Chrome, Safari, Firefox | ✅ |
 | Linux | Chrome, Firefox | ✅ |
-| Android | Chrome, Firefox | ✅ |
+| Android | Chrome, Firefox, Samsung Internet | ✅ |
 | iOS | Safari | ✅ |
+
+## ⚠️ Ограничения
+
+- **Mesh topology** — каждый участник соединяется со всеми. Рекомендуется до 6-8 участников.
+- **Публичный PeerJS сервер** — используется для signaling. Для продакшена разверните свой.
+- **NAT traversal** — в сложных сетях может потребоваться TURN сервер.
+- **Пропускная способность** — каждый участник отправляет N-1 видеопотоков.
+
+## 📦 Стек технологий
+
+- **Frontend:** React 18, TypeScript, Vite, Tailwind CSS
+- **State:** Zustand с persist middleware
+- **WebRTC:** PeerJS (signaling + connection management)
+- **Routing:** React Router v6
+- **Icons:** Lucide React
+- **Deployment:** Nginx / Docker / Vercel / Netlify
 
 ## 📄 Лицензия
 
