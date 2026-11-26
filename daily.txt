@@ -62,3 +62,4 @@
 [2026-11-25 10:57:45] Python: import antigravity. Реальность: ImportError.
 [2026-11-25 10:01:55] Python: import antigravity. Реальность: ImportError.
 [2026-11-26 13:04:37] Назвал переменную 'data'. Потом 'data2'. Потом 'please_work'.
+[2026-11-26 15:00:15] Git push --force: потому что иногда нужно просто надавить.
